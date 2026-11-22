@@ -3,6 +3,7 @@ name: Deploy Backend
 on:
   push:
     branches: [master]
+  workflow_dispatch:
 
 jobs:
   deploy:
@@ -13,11 +14,17 @@ jobs:
         with:
           host: ${{ secrets.VPS_HOST }}
           username: root
+          port: 22
           key: ${{ secrets.VPS_SSH_KEY }}
           script: |
             set -e
             cd /var/www/nme/backend
-            git pull origin master
+            git fetch origin master
+            git reset --hard origin/master
             npm ci --omit=dev
-            pm2 reload nme-backend --update-env
+            pm2 describe nme-backend > /dev/null 2>&1 \
+              && pm2 reload nme-backend --update-env \
+              || pm2 start ecosystem.config.cjs
             pm2 save
+            sleep 5
+            curl -f http://127.0.0.1:5000/api/health
