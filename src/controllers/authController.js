@@ -199,3 +199,55 @@ export const getMe = async (req, res) => {
     },
   });
 };
+
+export const changePassword = async (req, res, next) => {
+  try {
+    const { currentPassword, newPassword } = req.body;
+
+    if (!newPassword || newPassword.length < 8) {
+      return res.status(400).json({
+        success: false,
+        message: 'New password must be at least 8 characters long',
+      });
+    }
+
+    const user = await User.findById(req.user._id).select('+password');
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'User account not found',
+      });
+    }
+
+    // If currentPassword is provided, verify it. Admins can also reset directly without old password.
+    if (currentPassword) {
+      const isMatch = await user.comparePassword(currentPassword);
+      if (!isMatch) {
+        return res.status(400).json({
+          success: false,
+          message: 'Current password is incorrect',
+        });
+      }
+    }
+
+    user.password = newPassword;
+    await user.save();
+
+    await AuditLog.create({
+      userEmail: user.email,
+      userId: user._id,
+      action: 'auth.password_change',
+      description: `Password updated for ${user.email} directly from Admin Settings`,
+      ipAddress: req.ip || '127.0.0.1',
+      userAgent: req.headers['user-agent'] || '',
+      status: 'success',
+    });
+
+    res.status(200).json({
+      success: true,
+      message: 'Password has been successfully updated.',
+    });
+  } catch (error) {
+    next(error);
+  }
+};
