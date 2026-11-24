@@ -195,9 +195,59 @@ export const getMe = async (req, res) => {
       role: req.user.role,
       canPublish: req.user.canPublish,
       avatar: req.user.avatar,
+      bio: req.user.bio || '',
       lastLogin: req.user.lastLogin,
+      createdAt: req.user.createdAt,
     },
   });
+};
+
+export const updateProfile = async (req, res, next) => {
+  try {
+    const { name, avatar, bio } = req.body;
+    const user = await User.findById(req.user._id);
+
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'User account not found',
+      });
+    }
+
+    if (name && name.trim()) user.name = name.trim();
+    if (avatar !== undefined) user.avatar = avatar.trim();
+    if (bio !== undefined) user.bio = bio.trim();
+
+    await user.save();
+
+    await AuditLog.create({
+      userEmail: user.email,
+      userId: user._id,
+      action: 'user.update',
+      description: `User ${user.email} updated their personal profile`,
+      ipAddress: req.ip || '127.0.0.1',
+      userAgent: req.headers['user-agent'] || '',
+      status: 'success',
+    });
+
+    res.status(200).json({
+      success: true,
+      message: 'Profile updated successfully',
+      user: {
+        id: user._id,
+        name: user.name,
+        email: user.email,
+        role: user.role,
+        canPublish: user.canPublish,
+        avatar: user.avatar,
+        bio: user.bio || '',
+        lastLogin: user.lastLogin,
+        createdAt: user.createdAt,
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
 };
 
 export const changePassword = async (req, res, next) => {

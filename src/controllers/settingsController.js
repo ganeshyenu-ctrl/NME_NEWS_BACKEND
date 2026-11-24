@@ -1,5 +1,6 @@
 import { Setting } from '../models/Setting.js';
 import { AuditLog } from '../models/AuditLog.js';
+import { getIO } from '../config/socket.js';
 
 export const getSettings = async (req, res, next) => {
   try {
@@ -45,6 +46,11 @@ export const updateSettings = async (req, res, next) => {
     if (maintenanceMode !== undefined) settings.maintenanceMode = maintenanceMode;
 
     await settings.save();
+
+    // Broadcast updated settings in real time to all connected web clients
+    try {
+      getIO().emit('settings_updated', settings);
+    } catch {}
 
     await AuditLog.create({
       userEmail: req.user.email,
