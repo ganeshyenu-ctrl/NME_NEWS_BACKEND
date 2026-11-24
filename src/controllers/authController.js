@@ -1,4 +1,5 @@
 import { User } from '../models/User.js';
+import { Article } from '../models/Article.js';
 import { AuditLog } from '../models/AuditLog.js';
 import { signAccessToken, signRefreshToken, verifyRefreshToken } from '../utils/jwt.js';
 
@@ -214,11 +215,20 @@ export const updateProfile = async (req, res, next) => {
       });
     }
 
-    if (name && name.trim()) user.name = name.trim();
+    let nameChanged = false;
+    if (name && name.trim() && name.trim() !== user.name) {
+      user.name = name.trim();
+      nameChanged = true;
+    }
     if (avatar !== undefined) user.avatar = avatar.trim();
     if (bio !== undefined) user.bio = bio.trim();
 
     await user.save();
+
+    // Automatically sync authorName across all authored articles in real time
+    if (nameChanged) {
+      await Article.updateMany({ author: user._id }, { authorName: user.name });
+    }
 
     await AuditLog.create({
       userEmail: user.email,

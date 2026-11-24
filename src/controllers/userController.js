@@ -1,4 +1,5 @@
 import { User } from '../models/User.js';
+import { Article } from '../models/Article.js';
 import { AuditLog } from '../models/AuditLog.js';
 
 export const getUsers = async (req, res, next) => {
@@ -81,7 +82,11 @@ export const updateUser = async (req, res, next) => {
       });
     }
 
-    if (name) user.name = name;
+    let nameChanged = false;
+    if (name && name.trim() && name.trim() !== user.name) {
+      user.name = name.trim();
+      nameChanged = true;
+    }
     if (role) user.role = role;
     if (status) user.status = status;
     if (canPublish !== undefined) user.canPublish = canPublish;
@@ -90,6 +95,11 @@ export const updateUser = async (req, res, next) => {
     }
 
     await user.save();
+
+    // Automatically sync authorName across all authored articles
+    if (nameChanged) {
+      await Article.updateMany({ author: user._id }, { authorName: user.name });
+    }
 
     await AuditLog.create({
       userEmail: req.user.email,

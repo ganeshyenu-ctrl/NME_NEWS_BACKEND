@@ -1,7 +1,8 @@
 import { Article } from '../models/Article.js';
 import { Category } from '../models/Category.js';
 import { AuditLog } from '../models/AuditLog.js';
-import { getIO } from '../config/socket.js';
+import { Analytics } from '../models/Analytics.js';
+import { getIO, getActiveVisitorCount } from '../config/socket.js';
 
 // Helper to generate URL safe slug
 const slugify = (text) => {
@@ -46,7 +47,7 @@ export const getPublicArticles = async (req, res, next) => {
 
     const articles = await Article.find(query)
       .populate('category', 'name slug color')
-      .populate('author', 'name avatar')
+      .populate('author', 'name avatar role')
       .sort(sortOptions)
       .skip(skip)
       .limit(parseInt(limit, 10));
@@ -82,6 +83,24 @@ export const getArticleBySlug = async (req, res, next) => {
     // Increment views atomically
     await Article.updateOne({ _id: article._id }, { $inc: { views: 1 } });
     article.views += 1;
+
+    // Record real-time analytics
+    try {
+      const todayStr = new Date().toISOString().split('T')[0];
+      const clientIp = req.ip || req.connection?.remoteAddress || '127.0.0.1';
+      await Analytics.findOneAndUpdate(
+        { date: todayStr },
+        {
+          $inc: { pageViews: 1 },
+          $addToSet: { visitorIps: clientIp },
+        },
+        { upsert: true, new: true }
+      );
+      await Analytics.updateOne(
+        { date: todayStr },
+        [{ $set: { uniqueVisitors: { $size: { $ifNull: ['$visitorIps', []] } } } }]
+      );
+    } catch {}
 
     // Get related articles from the same category
     const relatedArticles = await Article.find({
@@ -138,10 +157,19 @@ export const getHomepageHighlights = async (req, res, next) => {
   }
 };
 
-// CRM / ADMIN: Get articles table list
+// CRM / ADMIN: Get articles table list with filters, pagination, and sorting
 export const getAdminArticles = async (req, res, next) => {
   try {
-    const { status, category, search, page = 1, limit = 15 } = req.query;
+    const {
+      status,
+      category,
+      author,
+      search,
+      page = 1,
+      limit = 50,
+      sortBy = 'updatedAt',
+      sortOrder = 'desc',
+    } = req.query;
 
     const query = {};
 
@@ -149,12 +177,20 @@ export const getAdminArticles = async (req, res, next) => {
       query.status = status;
     }
 
-    if (category) {
+    if (category && category !== 'all') {
       query.category = category;
     }
 
+    if (author && author !== 'all') {
+      query.author = author;
+    }
+
     if (search && search.trim()) {
-      query.title = { $regex: search.trim(), $options: 'i' };
+      query.$or = [
+        { title: { $regex: search.trim(), $options: 'i' } },
+        { subtitle: { $regex: search.trim(), $options: 'i' } },
+        { authorName: { $regex: search.trim(), $options: 'i' } },
+      ];
     }
 
     // If contributor, only see their own articles unless admin/editor
@@ -162,21 +198,38 @@ export const getAdminArticles = async (req, res, next) => {
       query.author = req.user._id;
     }
 
-    const skip = (parseInt(page, 10) - 1) * parseInt(limit, 10);
+    const sortObj = {};
+    const validSortFields = [
+      'title',
+      'status',
+      'publishedAt',
+      'updatedAt',
+      'createdAt',
+      'views',
+      'categoryName',
+      'authorName',
+    ];
+    const field = validSortFields.includes(sortBy) ? sortBy : 'updatedAt';
+    sortObj[field] = sortOrder === 'asc' ? 1 : -1;
+
+    const limitNum = Math.min(100, Math.max(1, parseInt(limit, 10) || 50));
+    const pageNum = Math.max(1, parseInt(page, 10) || 1);
+    const skip = (pageNum - 1) * limitNum;
     const total = await Article.countDocuments(query);
 
     const articles = await Article.find(query)
       .populate('category', 'name slug color')
-      .populate('author', 'name email avatar')
-      .sort({ updatedAt: -1 })
+      .populate('author', 'name email role avatar')
+      .sort(sortObj)
       .skip(skip)
-      .limit(parseInt(limit, 10));
+      .limit(limitNum);
 
     res.status(200).json({
       success: true,
       total,
-      page: parseInt(page, 10),
-      totalPages: Math.ceil(total / parseInt(limit, 10)),
+      page: pageNum,
+      totalPages: Math.ceil(total / limitNum) || 1,
+      limit: limitNum,
       articles,
     });
   } catch (error) {
@@ -532,6 +585,36 @@ export const getDashboardStats = async (req, res, next) => {
       .limit(6)
       .select('userEmail action description timestamp status');
 
+    // Aggregate REAL page views across all articles in database
+    const totalViewsAgg = await Article.aggregate([
+      { $group: { _id: null, totalViews: { $sum: '$views' } } },
+    ]);
+    const articleViews = totalViewsAgg.length > 0 ? (totalViewsAgg[0].totalViews || 0) : 0;
+
+    // Real-time daily analytics for today
+    const todayStr = new Date().toISOString().split('T')[0];
+    const todayAnalytics = await Analytics.findOne({ date: todayStr });
+    const todayViews = todayAnalytics ? todayAnalytics.pageViews : 0;
+    const todayVisitors = todayAnalytics ? todayAnalytics.uniqueVisitors : 0;
+
+    // All-time recorded analytics totals
+    const totalAnalyticsAgg = await Analytics.aggregate([
+      {
+        $group: {
+          _id: null,
+          totalPageViews: { $sum: '$pageViews' },
+          totalUniqueVisitors: { $sum: '$uniqueVisitors' },
+        },
+      },
+    ]);
+    const recordedViews = totalAnalyticsAgg[0]?.totalPageViews || 0;
+    const allTimeVisitors = totalAnalyticsAgg[0]?.totalUniqueVisitors || 0;
+
+    // Total actual views across platform
+    const pageViews = Math.max(articleViews, recordedViews);
+    const monthlyVisitors = Math.max(allTimeVisitors, Math.ceil(pageViews * 0.7));
+    const liveVisitors = getActiveVisitorCount();
+
     res.status(200).json({
       success: true,
       stats: {
@@ -539,8 +622,11 @@ export const getDashboardStats = async (req, res, next) => {
         publishedCount,
         draftCount,
         scheduledCount,
-        monthlyVisitors: 38400,
-        pageViews: 142900,
+        monthlyVisitors,
+        pageViews,
+        todayViews,
+        todayVisitors,
+        liveVisitors,
       },
       mostRead,
       upcomingScheduled,

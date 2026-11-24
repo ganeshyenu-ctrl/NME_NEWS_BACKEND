@@ -40,6 +40,7 @@ export const initSocket = (httpServer) => {
 
   ioInstance.on('connection', (socket) => {
     console.log(`[Socket.io] Client connected: ${socket.id}`);
+    broadcastLiveVisitors();
 
     // Join article room to track active readers
     socket.on('join_article', (articleSlug) => {
@@ -93,10 +94,27 @@ export const initSocket = (httpServer) => {
         }
       }
       console.log(`[Socket.io] Client disconnected: ${socket.id}`);
+      broadcastLiveVisitors();
     });
   });
 
   return ioInstance;
+};
+
+const broadcastLiveVisitors = () => {
+  if (ioInstance) {
+    try {
+      const liveCount = Math.max(1, ioInstance.engine?.clientsCount || 1);
+      ioInstance.to('crm_editorial').emit('live_visitors_update', {
+        liveVisitors: liveCount,
+      });
+    } catch {}
+  }
+};
+
+export const getActiveVisitorCount = () => {
+  if (!ioInstance || !ioInstance.engine) return 1;
+  return Math.max(1, ioInstance.engine.clientsCount || 1);
 };
 
 export const getIO = () => {

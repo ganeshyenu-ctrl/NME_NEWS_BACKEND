@@ -15,6 +15,7 @@ import { requireRole } from '../middleware/rbac.js';
 const router = express.Router();
 
 // Public routes
+router.get('/', getPublicArticles);
 router.get('/public', getPublicArticles);
 router.get('/highlights', getHomepageHighlights);
 router.get('/public/:slug', getArticleBySlug);
