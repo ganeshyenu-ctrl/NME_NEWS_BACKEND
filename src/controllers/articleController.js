@@ -105,7 +105,7 @@ export const getArticleBySlug = async (req, res, next) => {
     await Article.updateOne({ _id: article._id }, { $inc: { views: 1 } });
     article.views += 1;
 
-    // Record real-time analytics
+    // Record real-time analytics & broadcast updated live readership counts
     try {
       const todayStr = new Date().toISOString().split('T')[0];
       const clientIp = req.ip || req.connection?.remoteAddress || '127.0.0.1';
@@ -121,6 +121,16 @@ export const getArticleBySlug = async (req, res, next) => {
         { date: todayStr },
         [{ $set: { uniqueVisitors: { $size: { $ifNull: ['$visitorIps', []] } } } }]
       );
+
+      const readership = await computeReadershipStats();
+      const io = getIO();
+      if (io) {
+        io.emit('readership_stats_updated', {
+          totalReads: readership.pageViews,
+          activeToday: readership.todayViews,
+          liveVisitors: readership.liveVisitors,
+        });
+      }
     } catch {}
 
     // Get related articles from the same category
@@ -620,6 +630,62 @@ export const deleteArticle = async (req, res, next) => {
   }
 };
 
+// Shared helper to compute live readership statistics from MongoDB + Socket.io
+const computeReadershipStats = async () => {
+  const totalViewsAgg = await Article.aggregate([
+    { $group: { _id: null, totalViews: { $sum: '$views' } } },
+  ]);
+  const articleViews = totalViewsAgg.length > 0 ? (totalViewsAgg[0].totalViews || 0) : 0;
+
+  const todayStr = new Date().toISOString().split('T')[0];
+  const todayAnalytics = await Analytics.findOne({ date: todayStr });
+  const todayViews = todayAnalytics ? todayAnalytics.pageViews : 0;
+  const todayVisitors = todayAnalytics ? todayAnalytics.uniqueVisitors : 0;
+
+  const totalAnalyticsAgg = await Analytics.aggregate([
+    {
+      $group: {
+        _id: null,
+        totalPageViews: { $sum: '$pageViews' },
+        totalUniqueVisitors: { $sum: '$uniqueVisitors' },
+      },
+    },
+  ]);
+  const recordedViews = totalAnalyticsAgg[0]?.totalPageViews || 0;
+  const allTimeVisitors = totalAnalyticsAgg[0]?.totalUniqueVisitors || 0;
+
+  const pageViews = Math.max(articleViews, recordedViews);
+  const monthlyVisitors = Math.max(allTimeVisitors, Math.ceil(pageViews * 0.7));
+  const liveVisitors = getActiveVisitorCount();
+
+  return {
+    pageViews,
+    todayViews,
+    todayVisitors,
+    monthlyVisitors,
+    liveVisitors,
+  };
+};
+
+// PUBLIC: Live readership counts for website header (available logged-in and logged-out)
+export const getPublicReadershipStats = async (req, res, next) => {
+  try {
+    const readership = await computeReadershipStats();
+    res.status(200).json({
+      success: true,
+      stats: {
+        totalReads: readership.pageViews,
+        activeToday: readership.todayViews,
+        pageViews: readership.pageViews,
+        todayViews: readership.todayViews,
+        liveVisitors: readership.liveVisitors,
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
 // CRM: Dashboard Stats & Analytics
 export const getDashboardStats = async (req, res, next) => {
   try {
@@ -648,35 +714,13 @@ export const getDashboardStats = async (req, res, next) => {
       .limit(6)
       .select('userEmail action description timestamp status');
 
-    // Aggregate REAL page views across all articles in database
-    const totalViewsAgg = await Article.aggregate([
-      { $group: { _id: null, totalViews: { $sum: '$views' } } },
-    ]);
-    const articleViews = totalViewsAgg.length > 0 ? (totalViewsAgg[0].totalViews || 0) : 0;
-
-    // Real-time daily analytics for today
-    const todayStr = new Date().toISOString().split('T')[0];
-    const todayAnalytics = await Analytics.findOne({ date: todayStr });
-    const todayViews = todayAnalytics ? todayAnalytics.pageViews : 0;
-    const todayVisitors = todayAnalytics ? todayAnalytics.uniqueVisitors : 0;
-
-    // All-time recorded analytics totals
-    const totalAnalyticsAgg = await Analytics.aggregate([
-      {
-        $group: {
-          _id: null,
-          totalPageViews: { $sum: '$pageViews' },
-          totalUniqueVisitors: { $sum: '$uniqueVisitors' },
-        },
-      },
-    ]);
-    const recordedViews = totalAnalyticsAgg[0]?.totalPageViews || 0;
-    const allTimeVisitors = totalAnalyticsAgg[0]?.totalUniqueVisitors || 0;
-
-    // Total actual views across platform
-    const pageViews = Math.max(articleViews, recordedViews);
-    const monthlyVisitors = Math.max(allTimeVisitors, Math.ceil(pageViews * 0.7));
-    const liveVisitors = getActiveVisitorCount();
+    const {
+      pageViews,
+      todayViews,
+      todayVisitors,
+      monthlyVisitors,
+      liveVisitors,
+    } = await computeReadershipStats();
 
     res.status(200).json({
       success: true,

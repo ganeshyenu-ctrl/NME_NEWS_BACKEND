@@ -3,6 +3,7 @@ import {
   getPublicArticles,
   getArticleBySlug,
   getHomepageHighlights,
+  getPublicReadershipStats,
   getAdminArticles,
   createArticle,
   updateArticle,
@@ -20,6 +21,7 @@ const router = express.Router();
 // Public routes
 router.get('/', getPublicArticles);
 router.get('/public', getPublicArticles);
+router.get('/public-stats', getPublicReadershipStats);
 router.get('/highlights', getHomepageHighlights);
 router.get('/public/:slug', getArticleBySlug);
 
