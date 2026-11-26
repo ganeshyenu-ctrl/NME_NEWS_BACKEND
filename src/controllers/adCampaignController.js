@@ -1,63 +1,35 @@
+import mongoose from 'mongoose';
 import { AdCampaign } from '../models/AdCampaign.js';
 import { AuditLog } from '../models/AuditLog.js';
 import { getIO } from '../config/socket.js';
 
-// Initial realistic maritime industry sponsor ads (seeded if collection is empty)
-const SEED_ADS = [
-  {
-    title: 'Global Maritime Decarbonisation Summit 2026',
-    advertiser: 'Global Maritime Forum',
-    placement: 'homepage_top',
-    headline: 'Navigating Net-Zero Shipping Regulations & Alternative Marine Fuels',
-    description: 'Join 1,200+ shipowners, charterers, port authorities, and technology leaders in Singapore this October.',
-    imageUrl: 'https://images.unsplash.com/photo-1559136555-9303baea8ebd?auto=format&fit=crop&w=1200&q=80',
-    targetUrl: 'https://www.globalmaritimeforum.org',
-    callToAction: 'Register Delegate Pass',
-    badgeText: 'AD',
-    status: 'ACTIVE',
-    impressions: 480,
-    clicks: 34,
-  },
-  {
-    title: 'Next-Generation Multi-Fuel Marine Engines',
-    advertiser: 'Wärtsilä Power Systems',
-    placement: 'homepage_mid',
-    headline: 'Future-Proof Your Commercial Fleet with Methanol & Ammonia Ready Propulsion',
-    description: 'Ultra-low emission marine engines designed for next-decade environmental compliance and fuel efficiency.',
-    imageUrl: 'https://images.unsplash.com/photo-1544427920-c49ccfb85579?auto=format&fit=crop&w=1200&q=80',
-    targetUrl: 'https://www.wartsila.com/marine',
-    callToAction: 'Explore Engine Specifications',
-    badgeText: 'AD',
-    status: 'ACTIVE',
-    impressions: 320,
-    clicks: 22,
-  },
-  {
-    title: 'Fleet Emissions & EU ETS Compliance Software',
-    advertiser: 'DNV Maritime Intelligence',
-    placement: 'article_inline',
-    headline: 'Automated Carbon Intensity Indicator (CII) & FuelEU Voyage Forecasting',
-    description: 'Cut operational compliance fines by up to 35% with real-time digital voyage simulation.',
-    imageUrl: 'https://images.unsplash.com/photo-1509228468518-180dd4864904?auto=format&fit=crop&w=1200&q=80',
-    targetUrl: 'https://www.dnv.com/maritime',
-    callToAction: 'Request Platform Demo',
-    badgeText: 'AD',
-    status: 'ACTIVE',
-    impressions: 590,
-    clicks: 48,
-  },
-];
+const emitAdEvent = (eventName, payload) => {
+  try {
+    const io = getIO();
+    if (io) {
+      io.emit(eventName, payload);
+    }
+  } catch {}
+};
+
+const recordAdAudit = async (req, action, description) => {
+  try {
+    await AuditLog.create({
+      userEmail: req.user?.email || 'admin@nme.com',
+      userId: req.user?._id,
+      action,
+      description,
+      ipAddress: req.ip || '127.0.0.1',
+      userAgent: req.headers['user-agent'] || '',
+      status: 'success',
+    });
+  } catch {}
+};
 
 // PUBLIC: Get active ads for website presentation
 export const getPublicAds = async (req, res, next) => {
   try {
     const { placement } = req.query;
-
-    // Seed defaults if empty
-    const count = await AdCampaign.countDocuments();
-    if (count === 0) {
-      await AdCampaign.insertMany(SEED_ADS).catch(() => {});
-    }
 
     const query = { status: 'ACTIVE' };
 
@@ -85,21 +57,24 @@ export const getPublicAds = async (req, res, next) => {
 export const recordImpression = async (req, res, next) => {
   try {
     const { id } = req.params;
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(404).json({ success: false, message: 'Ad campaign not found' });
+    }
+
     const ad = await AdCampaign.findByIdAndUpdate(
       id,
       { $inc: { impressions: 1 } },
       { new: true }
     );
-    try {
-      const io = getIO();
-      if (io && ad) {
-        io.emit('ad_metrics_updated', {
-          id: ad._id,
-          impressions: ad.impressions,
-          clicks: ad.clicks,
-        });
-      }
-    } catch {}
+
+    if (ad) {
+      emitAdEvent('ad_metrics_updated', {
+        id: ad._id,
+        impressions: ad.impressions,
+        clicks: ad.clicks,
+      });
+    }
+
     res.status(200).json({ success: true });
   } catch (error) {
     next(error);
@@ -110,6 +85,10 @@ export const recordImpression = async (req, res, next) => {
 export const recordClick = async (req, res, next) => {
   try {
     const { id } = req.params;
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(404).json({ success: false, message: 'Ad campaign not found' });
+    }
+
     const ad = await AdCampaign.findByIdAndUpdate(
       id,
       { $inc: { clicks: 1 } },
@@ -120,16 +99,11 @@ export const recordClick = async (req, res, next) => {
       return res.status(404).json({ success: false, message: 'Ad not found' });
     }
 
-    try {
-      const io = getIO();
-      if (io) {
-        io.emit('ad_metrics_updated', {
-          id: ad._id,
-          impressions: ad.impressions,
-          clicks: ad.clicks,
-        });
-      }
-    } catch {}
+    emitAdEvent('ad_metrics_updated', {
+      id: ad._id,
+      impressions: ad.impressions,
+      clicks: ad.clicks,
+    });
 
     res.status(200).json({
       success: true,
@@ -144,11 +118,6 @@ export const recordClick = async (req, res, next) => {
 // ADMIN: Get all ad campaigns with full performance metrics
 export const getAdminAds = async (req, res, next) => {
   try {
-    const count = await AdCampaign.countDocuments();
-    if (count === 0) {
-      await AdCampaign.insertMany(SEED_ADS).catch(() => {});
-    }
-
     const ads = await AdCampaign.find().sort({ updatedAt: -1 }).lean();
 
     const totalImpressions = ads.reduce((acc, ad) => acc + (ad.impressions || 0), 0);
@@ -192,13 +161,13 @@ export const createAdminAd = async (req, res, next) => {
       callToAction = 'Learn More',
       headline = '',
       description = '',
-      badgeText = 'SPONSORED',
+      badgeText = 'AD',
       status = 'ACTIVE',
       startDate,
       endDate,
     } = req.body;
 
-    if (!title || !advertiser || !imageUrl || !targetUrl) {
+    if (!title?.trim() || !advertiser?.trim() || !imageUrl?.trim() || !targetUrl?.trim()) {
       return res.status(400).json({
         success: false,
         message: 'Campaign Title, Advertiser Name, Image URL, and Target URL are required.',
@@ -221,17 +190,12 @@ export const createAdminAd = async (req, res, next) => {
       createdBy: req.user?._id || null,
     });
 
-    try {
-      await AuditLog.create({
-        userEmail: req.user?.email || 'admin@nme.com',
-        userId: req.user?._id,
-        action: 'ad.create',
-        description: `Created advertisement campaign "${ad.title}" for ${ad.advertiser}`,
-        ipAddress: req.ip || '127.0.0.1',
-        userAgent: req.headers['user-agent'] || '',
-        status: 'success',
-      });
-    } catch {}
+    await recordAdAudit(
+      req,
+      'ad.create',
+      `Created advertisement campaign "${ad.title}" for ${ad.advertiser}`
+    );
+    emitAdEvent('ad_metrics_updated', { id: ad._id, created: true });
 
     res.status(201).json({
       success: true,
@@ -247,12 +211,38 @@ export const createAdminAd = async (req, res, next) => {
 export const updateAdminAd = async (req, res, next) => {
   try {
     const { id } = req.params;
-    const updates = { ...req.body };
+    const allowedFields = [
+      'title',
+      'advertiser',
+      'placement',
+      'imageUrl',
+      'targetUrl',
+      'callToAction',
+      'headline',
+      'description',
+      'badgeText',
+      'status',
+      'startDate',
+      'endDate',
+    ];
 
-    const ad = await AdCampaign.findByIdAndUpdate(id, updates, { new: true });
+    const updates = {};
+    for (const field of allowedFields) {
+      if (req.body[field] !== undefined) {
+        updates[field] = typeof req.body[field] === 'string' ? req.body[field].trim() : req.body[field];
+      }
+    }
+
+    const ad = await AdCampaign.findByIdAndUpdate(id, updates, {
+      new: true,
+      runValidators: true,
+    });
     if (!ad) {
       return res.status(404).json({ success: false, message: 'Ad campaign not found' });
     }
+
+    await recordAdAudit(req, 'ad.update', `Updated advertisement campaign "${ad.title}"`);
+    emitAdEvent('ad_metrics_updated', { id: ad._id, updated: true });
 
     res.status(200).json({
       success: true,
@@ -276,6 +266,13 @@ export const toggleAdminAdStatus = async (req, res, next) => {
     ad.status = ad.status === 'ACTIVE' ? 'PAUSED' : 'ACTIVE';
     await ad.save();
 
+    await recordAdAudit(
+      req,
+      'ad.status_toggle',
+      `Toggled advertisement campaign "${ad.title}" status to ${ad.status}`
+    );
+    emitAdEvent('ad_metrics_updated', { id: ad._id, status: ad.status });
+
     res.status(200).json({
       success: true,
       message: `Ad campaign is now ${ad.status}`,
@@ -295,9 +292,16 @@ export const deleteAdminAd = async (req, res, next) => {
       return res.status(404).json({ success: false, message: 'Ad campaign not found' });
     }
 
+    await recordAdAudit(
+      req,
+      'ad.delete',
+      `Deleted advertisement campaign "${ad.title}" (${ad.advertiser})`
+    );
+    emitAdEvent('ad_metrics_updated', { id, deleted: true });
+
     res.status(200).json({
       success: true,
-      message: 'Ad campaign deleted',
+      message: 'Ad campaign deleted from database',
     });
   } catch (error) {
     next(error);

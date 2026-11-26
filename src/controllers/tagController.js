@@ -4,19 +4,94 @@ import { AuditLog } from '../models/AuditLog.js';
 
 export const getTags = async (req, res, next) => {
   try {
-    const tags = await Tag.find().sort({ name: 1 });
+    let tags = await Tag.find().sort({ name: 1 });
     
-    // Calculate article counts per tag
+    // Calculate article counts per tag and collect all distinct tags from articles
     const articles = await Article.find({}, 'tags');
     const tagCountMap = {};
+    const articleTagsMap = new Map();
+
     for (const art of articles) {
       if (Array.isArray(art.tags)) {
         for (const t of art.tags) {
-          const norm = t.toLowerCase().trim();
-          tagCountMap[norm] = (tagCountMap[norm] || 0) + 1;
+          if (t && typeof t === 'string' && t.trim()) {
+            const raw = t.trim();
+            const norm = raw.toLowerCase();
+            tagCountMap[norm] = (tagCountMap[norm] || 0) + 1;
+            if (!articleTagsMap.has(norm)) {
+              articleTagsMap.set(norm, raw);
+            }
+          }
         }
       }
     }
+
+    // Default industry editorial tags
+    const DEFAULT_EDITORIAL_TAGS = [
+      'Decarbonisation',
+      'Fleet Efficiency',
+      'IMO Regulations',
+      'Commercial Shipping',
+      'Alternative Fuels',
+      'Green Corridors',
+      'Methanol',
+      'Ammonia',
+      'Digital Twins',
+      'Automation',
+      'Smart Ports',
+      'Logistics',
+      'Safety',
+      'Seafarers',
+      'Offshore',
+      'Telemetry',
+      'Maintenance',
+    ];
+
+    for (const dTag of DEFAULT_EDITORIAL_TAGS) {
+      const norm = dTag.toLowerCase();
+      if (!articleTagsMap.has(norm)) {
+        articleTagsMap.set(norm, dTag);
+      }
+    }
+
+    // Check which tags are not yet in Tag collection
+    const existingNorms = new Set(tags.map((t) => t.name.toLowerCase().trim()));
+    const missingTags = [];
+
+    for (const [norm, rawName] of articleTagsMap.entries()) {
+      if (!existingNorms.has(norm)) {
+        const slug = rawName
+          .toLowerCase()
+          .replace(/\s+/g, '-')
+          .replace(/[^\w\-]+/g, '');
+        missingTags.push({
+          name: rawName,
+          slug: slug || `tag-${Date.now()}`,
+          description: `Industry intelligence and reporting on ${rawName}.`,
+        });
+        existingNorms.add(norm);
+      }
+    }
+
+    if (missingTags.length > 0) {
+      try {
+        const inserted = await Tag.insertMany(missingTags, { ordered: false });
+        tags = [...tags, ...inserted];
+      } catch (insertErr) {
+        const virtuals = missingTags.map((m, idx) => ({
+          _id: `tag_gen_${idx}`,
+          id: `tag_gen_${idx}`,
+          name: m.name,
+          slug: m.slug,
+          description: m.description,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        }));
+        tags = [...tags, ...virtuals];
+      }
+    }
+
+    tags.sort((a, b) => a.name.localeCompare(b.name));
 
     const tagsWithCounts = tags.map((t) => ({
       _id: t._id,
