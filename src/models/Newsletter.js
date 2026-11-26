@@ -11,6 +11,11 @@ const newsletterSchema = new mongoose.Schema(
       match: [/^\S+@\S+\.\S+$/, 'Valid email required'],
       index: true,
     },
+    firstName: {
+      type: String,
+      trim: true,
+      default: '',
+    },
     topics: [
       {
         type: String,
@@ -24,13 +29,38 @@ const newsletterSchema = new mongoose.Schema(
     },
     status: {
       type: String,
-      enum: ['active', 'unsubscribed'],
-      default: 'active',
+      enum: ['SUBSCRIBED', 'UNSUBSCRIBED', 'SUPPRESSED', 'active', 'unsubscribed', 'suppressed'],
+      default: 'SUBSCRIBED',
+      index: true,
+    },
+    source: {
+      type: String,
+      trim: true,
+      default: 'website',
+    },
+    consentAt: {
+      type: Date,
+      default: Date.now,
+    },
+    subscribedAt: {
+      type: Date,
+      default: Date.now,
+    },
+    unsubscribedAt: {
+      type: Date,
+      default: null,
+    },
+    suppressReason: {
+      type: String,
+      trim: true,
+      default: '',
     },
   },
   {
     timestamps: true,
   }
 );
+
+newsletterSchema.index({ email: 'text', firstName: 'text' });
 
 export const Newsletter = mongoose.model('Newsletter', newsletterSchema);

@@ -20,6 +20,10 @@ import newsletterRoutes from './routes/newsletterRoutes.js';
 import userRoutes from './routes/userRoutes.js';
 import auditRoutes from './routes/auditRoutes.js';
 import settingsRoutes from './routes/settingsRoutes.js';
+import tagRoutes from './routes/tagRoutes.js';
+import campaignRoutes from './routes/campaignRoutes.js';
+import analyticsRoutes from './routes/analyticsRoutes.js';
+import adCampaignRoutes from './routes/adCampaignRoutes.js';
 
 dotenv.config();
 
@@ -125,6 +129,10 @@ app.use('/api/newsletter', newsletterRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/audit', auditRoutes);
 app.use('/api/settings', settingsRoutes);
+app.use('/api/tags', tagRoutes);
+app.use('/api/campaigns', campaignRoutes);
+app.use('/api/analytics', analyticsRoutes);
+app.use('/api/ads', adCampaignRoutes);
 
 // 404 handler for unknown routes
 app.use((req, res) => {
@@ -139,6 +147,8 @@ app.use(errorHandler);
 
 // Initialize WebSockets
 initSocket(httpServer);
+
+import { startSchedulerWorker } from './services/schedulerService.js';
 
 // Server Startup
 const PORT = process.env.PORT || 5000;
@@ -182,6 +192,7 @@ export const startServer = async () => {
     await connectDB();
     httpServer.listen(PORT, () => {
       printEnvironmentDiagnostics();
+      startSchedulerWorker(30);
     });
     return httpServer;
   } catch (error) {

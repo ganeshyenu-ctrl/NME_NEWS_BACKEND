@@ -1,5 +1,6 @@
 import { Article } from '../models/Article.js';
 import { Category } from '../models/Category.js';
+import { Comment } from '../models/Comment.js';
 import { AuditLog } from '../models/AuditLog.js';
 import { Analytics } from '../models/Analytics.js';
 import { getIO, getActiveVisitorCount } from '../config/socket.js';
@@ -21,6 +22,13 @@ const slugify = (text) => {
 export const getPublicArticles = async (req, res, next) => {
   try {
     const { category, search, page = 1, limit = 10, sort = 'newest' } = req.query;
+
+    // Automatically ensure any due scheduled articles are published
+    const now = new Date();
+    await Article.updateMany(
+      { status: { $in: ['scheduled', 'SCHEDULED'] }, scheduledAt: { $lte: now } },
+      { $set: { status: 'published', publishedAt: now } }
+    ).catch(() => {});
 
     const query = { status: 'published' };
 
@@ -52,12 +60,25 @@ export const getPublicArticles = async (req, res, next) => {
       .skip(skip)
       .limit(parseInt(limit, 10));
 
+    const articlesWithCounts = await Promise.all(
+      articles.map(async (art) => {
+        const commentCount = await Comment.countDocuments({
+          article: art._id,
+          status: 'approved',
+        });
+        return {
+          ...art.toObject(),
+          commentCount,
+        };
+      })
+    );
+
     res.status(200).json({
       success: true,
       total,
       page: parseInt(page, 10),
       totalPages: Math.ceil(total / parseInt(limit, 10)),
-      articles,
+      articles: articlesWithCounts,
     });
   } catch (error) {
     next(error);
@@ -111,9 +132,18 @@ export const getArticleBySlug = async (req, res, next) => {
       .limit(3)
       .select('title slug subtitle featuredImage readTime publishedAt');
 
+    // Count approved comments for this article
+    const commentCount = await Comment.countDocuments({
+      article: article._id,
+      status: 'approved',
+    });
+
     res.status(200).json({
       success: true,
-      article,
+      article: {
+        ...article.toObject(),
+        commentCount,
+      },
       relatedArticles,
     });
   } catch (error) {
@@ -124,16 +154,30 @@ export const getArticleBySlug = async (req, res, next) => {
 // PUBLIC: Get Lead article & Breaking news ticker
 export const getHomepageHighlights = async (req, res, next) => {
   try {
-    const lead = await Article.findOne({ status: 'published', isLead: true })
+    // Find ALL published articles marked as Feature as Lead Story for carousel slider
+    const leadArticles = await Article.find({ status: 'published', isLead: true })
+      .sort({ publishedAt: -1, updatedAt: -1 })
       .populate('category', 'name slug color')
       .populate('author', 'name avatar');
 
-    const fallbackLead =
-      lead ||
-      (await Article.findOne({ status: 'published' })
+    let finalLeadArticles = leadArticles;
+    let fallbackLead = leadArticles[0] || null;
+
+    if (finalLeadArticles.length < 2) {
+      const topPublished = await Article.find({
+        status: 'published',
+        _id: { $nin: finalLeadArticles.map((a) => a._id) },
+      })
         .sort({ publishedAt: -1 })
+        .limit(3)
         .populate('category', 'name slug color')
-        .populate('author', 'name avatar'));
+        .populate('author', 'name avatar');
+
+      finalLeadArticles = [...finalLeadArticles, ...topPublished];
+      if (!fallbackLead && finalLeadArticles[0]) {
+        fallbackLead = finalLeadArticles[0];
+      }
+    }
 
     const breakingNews = await Article.find({ status: 'published', isBreaking: true })
       .sort({ publishedAt: -1 })
@@ -146,9 +190,23 @@ export const getHomepageHighlights = async (req, res, next) => {
       .populate('category', 'name slug color')
       .select('title slug views publishedAt category');
 
+    const leadArticlesWithCounts = await Promise.all(
+      finalLeadArticles.map(async (art) => {
+        const commentCount = await Comment.countDocuments({
+          article: art._id,
+          status: 'approved',
+        });
+        return {
+          ...(art.toObject ? art.toObject() : art),
+          commentCount,
+        };
+      })
+    );
+
     res.status(200).json({
       success: true,
-      lead: fallbackLead,
+      lead: leadArticlesWithCounts[0] || fallbackLead,
+      leadArticles: leadArticlesWithCounts,
       breakingNews,
       trending,
     });
@@ -224,13 +282,26 @@ export const getAdminArticles = async (req, res, next) => {
       .skip(skip)
       .limit(limitNum);
 
+    const articlesWithCounts = await Promise.all(
+      articles.map(async (art) => {
+        const commentCount = await Comment.countDocuments({
+          article: art._id,
+          status: 'approved',
+        });
+        return {
+          ...art.toObject(),
+          commentCount,
+        };
+      })
+    );
+
     res.status(200).json({
       success: true,
       total,
       page: pageNum,
       totalPages: Math.ceil(total / limitNum) || 1,
       limit: limitNum,
-      articles,
+      articles: articlesWithCounts,
     });
   } catch (error) {
     next(error);
@@ -285,11 +356,6 @@ export const createArticle = async (req, res, next) => {
     }
 
     const publishedAt = finalStatus === 'published' ? new Date() : null;
-
-    // If lead is true, unset previous lead
-    if (isLead) {
-      await Article.updateMany({ isLead: true }, { isLead: false });
-    }
 
     const newArticle = await Article.create({
       title,
@@ -428,9 +494,6 @@ export const updateArticle = async (req, res, next) => {
     }
 
     if (isLead !== undefined) {
-      if (isLead && !article.isLead) {
-        await Article.updateMany({ isLead: true }, { isLead: false });
-      }
       article.isLead = isLead;
     }
 
@@ -636,3 +699,122 @@ export const getDashboardStats = async (req, res, next) => {
     next(error);
   }
 };
+
+// Editorial Calendar: Retrieve all articles formatted for calendar grid & unscheduled sidebar
+export const getCalendarArticles = async (req, res, next) => {
+  try {
+    const { category, author } = req.query;
+
+    const query = {};
+    if (category) query.category = category;
+    if (author) query.author = author;
+
+    const articles = await Article.find(query)
+      .populate('category', 'name slug color')
+      .populate('author', 'name email role')
+      .sort({ updatedAt: -1 })
+      .lean();
+
+    const formatted = articles.map((a) => {
+      const at = a.scheduledAt || a.publishedAt || null;
+      return {
+        _id: a._id,
+        id: a._id,
+        title: a.title,
+        headline: a.title,
+        slug: a.slug,
+        status: (a.status || 'draft').toUpperCase(),
+        scheduledAt: a.scheduledAt,
+        publishedAt: a.publishedAt,
+        at,
+        category: a.category,
+        author: a.author,
+        categoryId: a.category?._id || a.category,
+        authorId: a.author?._id || a.author,
+        categoryName: a.categoryName || a.category?.name || 'General',
+        authorName: a.authorName || a.author?.name || 'Staff',
+      };
+    });
+
+    res.status(200).json({
+      success: true,
+      articles: formatted,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// Editorial Calendar: Reschedule or schedule article
+export const rescheduleArticle = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const { scheduledAt } = req.body;
+
+    if (!scheduledAt) {
+      return res.status(400).json({
+        success: false,
+        message: 'A valid scheduled date and time is required',
+      });
+    }
+
+    const targetDate = new Date(scheduledAt);
+    if (isNaN(targetDate.getTime())) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid date/time format',
+      });
+    }
+
+    const article = await Article.findById(id);
+    if (!article) {
+      return res.status(404).json({
+        success: false,
+        message: 'Article not found',
+      });
+    }
+
+    const was = article.scheduledAt;
+    const isDue = targetDate <= new Date();
+    article.scheduledAt = targetDate;
+    article.status = isDue ? 'published' : 'scheduled';
+    if (isDue) {
+      article.publishedAt = targetDate;
+    }
+    await article.save();
+
+    await AuditLog.create({
+      userEmail: req.user?.email || 'admin@nme.com',
+      userId: req.user?._id,
+      action: isDue ? 'article.publish' : 'article.schedule',
+      description: `${was ? 'Rescheduled' : 'Scheduled'} "${article.title}" for ${targetDate.toISOString()} (${isDue ? 'Auto-published immediately' : 'editorial calendar queued'})`,
+      ipAddress: req.ip || '127.0.0.1',
+      userAgent: req.headers['user-agent'] || '',
+      status: 'success',
+    });
+
+    res.status(200).json({
+      success: true,
+      message: `${isDue ? 'Published' : was ? 'Rescheduled' : 'Scheduled'} for ${targetDate.toLocaleString('en-GB')}`,
+      article,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// Manually / programmatically trigger auto-publish sweep
+export const triggerAutoPublish = async (req, res, next) => {
+  try {
+    const { publishDueScheduledArticles } = await import('../services/schedulerService.js');
+    const publishedCount = await publishDueScheduledArticles();
+    res.status(200).json({
+      success: true,
+      message: `Checked scheduled articles. ${publishedCount} published.`,
+      publishedCount,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+

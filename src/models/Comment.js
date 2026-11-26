@@ -30,7 +30,8 @@ const commentSchema = new mongoose.Schema(
     status: {
       type: String,
       enum: ['approved', 'pending', 'spam'],
-      default: 'approved',
+      default: 'pending',
+      index: true,
     },
     ipAddress: {
       type: String,

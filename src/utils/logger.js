@@ -12,3 +12,5 @@ export const logger = {
     console.log(`[CYBER-SEC] 🚨 ${new Date().toISOString()} - ${msg}`, JSON.stringify(meta));
   },
 };
+
+export default logger;
