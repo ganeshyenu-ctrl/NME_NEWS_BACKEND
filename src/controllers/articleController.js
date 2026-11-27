@@ -1,9 +1,47 @@
+import mongoose from 'mongoose';
 import { Article } from '../models/Article.js';
 import { Category } from '../models/Category.js';
 import { Comment } from '../models/Comment.js';
 import { AuditLog } from '../models/AuditLog.js';
 import { Analytics } from '../models/Analytics.js';
 import { getIO, getActiveVisitorCount } from '../config/socket.js';
+
+const isSectionEditor = (user) =>
+  user?.role === 'section_editor' || (user?.role === 'editor' && user?.canPublish === false);
+
+const emitArticleSocketEvents = ({ article, categoryName, type, userName }) => {
+  try {
+    const io = getIO();
+    if (!io) return;
+
+    if (article.status === 'published') {
+      io.emit('new_article_published', {
+        id: article._id,
+        title: article.title,
+        slug: article.slug,
+        categoryName: categoryName || article.categoryName,
+        publishedAt: article.publishedAt,
+      });
+
+      if (article.isBreaking) {
+        io.emit('breaking_news_alert', {
+          title: article.title,
+          slug: article.slug,
+        });
+      }
+    }
+
+    io.to('crm_editorial').emit('editorial_activity', {
+      type,
+      user: userName,
+      title: article.title,
+      status: article.status,
+      timestamp: new Date(),
+    });
+  } catch (sockErr) {
+    console.warn('[Socket.io] Broadcast skipped:', sockErr.message);
+  }
+};
 
 // Helper to generate URL safe slug
 const slugify = (text) => {
@@ -255,7 +293,11 @@ export const getAdminArticles = async (req, res, next) => {
     }
 
     if (author && author !== 'all') {
-      query.author = author;
+      if (mongoose.Types.ObjectId.isValid(author)) {
+        query.author = author;
+      } else {
+        query.authorName = author;
+      }
     }
 
     if (search && search.trim()) {
@@ -266,7 +308,7 @@ export const getAdminArticles = async (req, res, next) => {
       ];
     }
 
-    // If contributor, only see their own articles unless admin/editor
+    // If contributor, only see their own articles unless admin/editor/section_editor
     if (req.user.role === 'contributor') {
       query.author = req.user._id;
     }
@@ -290,9 +332,15 @@ export const getAdminArticles = async (req, res, next) => {
     const skip = (pageNum - 1) * limitNum;
     const total = await Article.countDocuments(query);
 
+    const approvalFilter =
+      req.user.role === 'contributor'
+        ? { status: 'under_review', author: req.user._id }
+        : { status: 'under_review' };
+    const pendingApprovalCount = await Article.countDocuments(approvalFilter);
+
     const articles = await Article.find(query)
       .populate('category', 'name slug color')
-      .populate('author', 'name email role avatar')
+      .populate('author', 'name email role canPublish avatar')
       .sort(sortObj)
       .skip(skip)
       .limit(limitNum);
@@ -313,6 +361,7 @@ export const getAdminArticles = async (req, res, next) => {
     res.status(200).json({
       success: true,
       total,
+      pendingApprovalCount,
       page: pageNum,
       totalPages: Math.ceil(total / limitNum) || 1,
       limit: limitNum,
@@ -323,9 +372,51 @@ export const getAdminArticles = async (req, res, next) => {
   }
 };
 
+// CRM / ADMIN: Get single article by ID for editing or read-only viewing
+export const getAdminArticleById = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(404).json({ success: false, message: 'Article not found' });
+    }
+
+    const article = await Article.findById(id)
+      .populate('category', 'name slug color')
+      .populate('author', 'name email role canPublish avatar');
+
+    if (!article) {
+      return res.status(404).json({ success: false, message: 'Article not found' });
+    }
+
+    if (
+      req.user.role === 'contributor' &&
+      String(article.author?._id || article.author) !== req.user._id.toString()
+    ) {
+      return res.status(403).json({
+        success: false,
+        message: 'You can only view your own articles',
+      });
+    }
+
+    res.status(200).json({
+      success: true,
+      article,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
 // CRM: Create Article
 export const createArticle = async (req, res, next) => {
   try {
+    if (isSectionEditor(req.user)) {
+      return res.status(403).json({
+        success: false,
+        message: 'Section Editors have read-only view and analysis access.',
+      });
+    }
+
     const {
       title,
       slug: customSlug,
@@ -364,10 +455,11 @@ export const createArticle = async (req, res, next) => {
       finalSlug = `${finalSlug}-${Date.now().toString().slice(-4)}`;
     }
 
-    // Role check: Contributors cannot publish directly
+    // Role check: Contributors can save drafts or submit for Senior Editor approval (under_review)
     let finalStatus = status;
-    if (req.user.role === 'contributor' && status === 'published') {
-      finalStatus = 'draft';
+    const isContributor = req.user.role === 'contributor';
+    if (isContributor) {
+      finalStatus = status === 'draft' ? 'draft' : 'under_review';
     }
 
     const publishedAt = finalStatus === 'published' ? new Date() : null;
@@ -382,11 +474,11 @@ export const createArticle = async (req, res, next) => {
       author: req.user._id,
       authorName: req.user.name,
       status: finalStatus,
-      isLead,
-      isBreaking,
+      isLead: isContributor ? false : Boolean(isLead),
+      isBreaking: isContributor ? false : Boolean(isBreaking),
       featuredImage: featuredImage || { url: '', alt: '', caption: '' },
       readTime: readTime || '3 min read',
-      scheduledAt: scheduledAt || null,
+      scheduledAt: isContributor ? null : scheduledAt || null,
       publishedAt,
       tags: Array.isArray(tags) ? tags : [],
       seo: seo || { metaTitle: title, metaDescription: subtitle || '' },
@@ -408,39 +500,19 @@ export const createArticle = async (req, res, next) => {
     });
 
     // Socket.io Real-time Broadcast
-    try {
-      const io = getIO();
-      if (finalStatus === 'published') {
-        io.emit('new_article_published', {
-          id: newArticle._id,
-          title: newArticle.title,
-          slug: newArticle.slug,
-          categoryName: catDoc.name,
-          publishedAt: newArticle.publishedAt,
-        });
-
-        if (isBreaking) {
-          io.emit('breaking_news_alert', {
-            title: newArticle.title,
-            slug: newArticle.slug,
-          });
-        }
-      }
-
-      // Notify CRM editorial stream
-      io.to('crm_editorial').emit('editorial_activity', {
-        type: 'article_created',
-        user: req.user.name,
-        title: newArticle.title,
-        timestamp: new Date(),
-      });
-    } catch (sockErr) {
-      console.warn('[Socket.io] Broadcast skipped:', sockErr.message);
-    }
+    emitArticleSocketEvents({
+      article: newArticle,
+      categoryName: catDoc.name,
+      type: finalStatus === 'under_review' ? 'article_submitted_for_approval' : 'article_created',
+      userName: req.user.name,
+    });
 
     res.status(201).json({
       success: true,
-      message: 'Article created successfully',
+      message:
+        finalStatus === 'under_review'
+          ? 'Article submitted to Senior Editor for approval'
+          : 'Article created successfully',
       article: newArticle,
     });
   } catch (error) {
@@ -451,6 +523,13 @@ export const createArticle = async (req, res, next) => {
 // CRM: Update Article
 export const updateArticle = async (req, res, next) => {
   try {
+    if (isSectionEditor(req.user)) {
+      return res.status(403).json({
+        success: false,
+        message: 'Section Editors have read-only view and analysis access.',
+      });
+    }
+
     const { id } = req.params;
     const article = await Article.findById(id);
 
@@ -461,7 +540,7 @@ export const updateArticle = async (req, res, next) => {
       });
     }
 
-    // Authorization: Contributors can only edit their own drafts
+    // Authorization: Contributors can only edit their own articles
     if (req.user.role === 'contributor' && article.author.toString() !== req.user._id.toString()) {
       return res.status(403).json({
         success: false,
@@ -496,7 +575,6 @@ export const updateArticle = async (req, res, next) => {
     if (category && category !== article.category.toString()) {
       const newCat = await Category.findById(category);
       if (newCat) {
-        // adjust counts
         await Category.findByIdAndUpdate(article.category, { $inc: { articleCount: -1 } });
         await Category.findByIdAndUpdate(category, { $inc: { articleCount: 1 } });
         article.category = category;
@@ -508,17 +586,18 @@ export const updateArticle = async (req, res, next) => {
       article.slug = slugify(customSlug);
     }
 
-    if (isLead !== undefined) {
-      article.isLead = isLead;
+    if (req.user.role !== 'contributor') {
+      if (isLead !== undefined) article.isLead = isLead;
+      if (isBreaking !== undefined) article.isBreaking = isBreaking;
+      if (scheduledAt !== undefined) article.scheduledAt = scheduledAt;
     }
-
-    if (isBreaking !== undefined) article.isBreaking = isBreaking;
-    if (scheduledAt !== undefined) article.scheduledAt = scheduledAt;
 
     // Status transition
     if (status && status !== article.status) {
-      if (req.user.role === 'contributor' && status === 'published') {
-        // Ignored for contributor
+      if (req.user.role === 'contributor') {
+        if (status === 'draft' || status === 'under_review') {
+          article.status = status;
+        }
       } else {
         article.status = status;
         if (status === 'published' && !article.publishedAt) {
@@ -541,38 +620,101 @@ export const updateArticle = async (req, res, next) => {
       details: { articleId: article._id },
     });
 
-    // Real-time notification
-    try {
-      const io = getIO();
-      if (article.status === 'published' && article.isBreaking) {
-        io.emit('breaking_news_alert', {
-          title: article.title,
-          slug: article.slug,
-        });
-      }
-
-      // Real-time public refresh when published
-      if (article.status === 'published') {
-        io.emit('new_article_published', {
-          id: article._id,
-          title: article.title,
-          slug: article.slug,
-          categoryName: article.categoryName,
-          publishedAt: article.publishedAt,
-        });
-      }
-
-      io.to('crm_editorial').emit('editorial_activity', {
-        type: 'article_updated',
-        user: req.user.name,
-        title: article.title,
-        timestamp: new Date(),
-      });
-    } catch (sockErr) {}
+    emitArticleSocketEvents({
+      article,
+      categoryName: article.categoryName,
+      type: article.status === 'under_review' ? 'article_submitted_for_approval' : 'article_updated',
+      userName: req.user.name,
+    });
 
     res.status(200).json({
       success: true,
       message: 'Article updated successfully',
+      article,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// CRM: Senior Editor / Admin Approve & Publish Article
+export const approveArticle = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const article = await Article.findById(id);
+
+    if (!article) {
+      return res.status(404).json({ success: false, message: 'Article not found' });
+    }
+
+    article.status = 'published';
+    if (!article.publishedAt) {
+      article.publishedAt = new Date();
+    }
+    await article.save();
+
+    await AuditLog.create({
+      userEmail: req.user.email,
+      userId: req.user._id,
+      action: 'article.approve',
+      description: `Approved and published article "${article.title}"`,
+      ipAddress: req.ip || '127.0.0.1',
+      userAgent: req.headers['user-agent'] || '',
+      status: 'success',
+      details: { articleId: article._id },
+    });
+
+    emitArticleSocketEvents({
+      article,
+      categoryName: article.categoryName,
+      type: 'article_approved',
+      userName: req.user.name,
+    });
+
+    res.status(200).json({
+      success: true,
+      message: 'Article approved and published to live wire',
+      article,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// CRM: Senior Editor / Admin Reject Article
+export const rejectArticle = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const article = await Article.findById(id);
+
+    if (!article) {
+      return res.status(404).json({ success: false, message: 'Article not found' });
+    }
+
+    article.status = 'rejected';
+    await article.save();
+
+    await AuditLog.create({
+      userEmail: req.user.email,
+      userId: req.user._id,
+      action: 'article.reject',
+      description: `Rejected article "${article.title}"`,
+      ipAddress: req.ip || '127.0.0.1',
+      userAgent: req.headers['user-agent'] || '',
+      status: 'success',
+      details: { articleId: article._id },
+    });
+
+    emitArticleSocketEvents({
+      article,
+      categoryName: article.categoryName,
+      type: 'article_rejected',
+      userName: req.user.name,
+    });
+
+    res.status(200).json({
+      success: true,
+      message: 'Article rejected',
       article,
     });
   } catch (error) {

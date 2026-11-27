@@ -51,7 +51,7 @@ const seedData = async () => {
       name: 'Section Editor',
       email: 'section.editor@nmepublication.com',
       password: DEMO_PW,
-      role: 'editor',
+      role: 'section_editor',
       canPublish: false,
       status: 'active',
       avatar: 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=150',

@@ -5,8 +5,11 @@ import {
   getHomepageHighlights,
   getPublicReadershipStats,
   getAdminArticles,
+  getAdminArticleById,
   createArticle,
   updateArticle,
+  approveArticle,
+  rejectArticle,
   deleteArticle,
   getDashboardStats,
   getCalendarArticles,
@@ -29,11 +32,14 @@ router.get('/public/:slug', getArticleBySlug);
 router.get('/admin/stats', authenticate, getDashboardStats);
 router.get('/admin/list', authenticate, getAdminArticles);
 router.get('/admin/calendar', authenticate, getCalendarArticles);
+router.get('/admin/:id', authenticate, getAdminArticleById);
+router.patch('/admin/:id/approve', authenticate, requireRole(['admin', 'editor']), approveArticle);
+router.patch('/admin/:id/reject', authenticate, requireRole(['admin', 'editor']), rejectArticle);
 router.patch('/admin/:id/reschedule', authenticate, requireRole(['admin', 'editor']), rescheduleArticle);
 router.put('/admin/:id/reschedule', authenticate, requireRole(['admin', 'editor']), rescheduleArticle);
 router.post('/admin/publish-scheduled', authenticate, requireRole(['admin', 'editor']), triggerAutoPublish);
-router.post('/admin', authenticate, createArticle);
-router.put('/admin/:id', authenticate, updateArticle);
+router.post('/admin', authenticate, requireRole(['admin', 'editor', 'contributor']), createArticle);
+router.put('/admin/:id', authenticate, requireRole(['admin', 'editor', 'contributor']), updateArticle);
 router.delete('/admin/:id', authenticate, requireRole(['admin', 'editor']), deleteArticle);
 
 export default router;

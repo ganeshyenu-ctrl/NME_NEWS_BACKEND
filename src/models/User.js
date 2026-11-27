@@ -26,7 +26,7 @@ const userSchema = new mongoose.Schema(
     },
     role: {
       type: String,
-      enum: ['admin', 'editor', 'contributor'],
+      enum: ['admin', 'editor', 'section_editor', 'contributor'],
       default: 'contributor',
       index: true,
     },
@@ -62,9 +62,13 @@ const userSchema = new mongoose.Schema(
   }
 );
 
-// Pre-save hook: auto-set canPublish based on role if not set
+// Pre-save hook: enforce canPublish by role without overwriting explicit false on editors
 userSchema.pre('save', async function (next) {
-  if (this.role === 'admin' || this.role === 'editor') {
+  if (this.role === 'admin') {
+    this.canPublish = true;
+  } else if (this.role === 'section_editor' || this.role === 'contributor') {
+    this.canPublish = false;
+  } else if (this.role === 'editor' && this.isNew && this.canPublish === undefined) {
     this.canPublish = true;
   }
 

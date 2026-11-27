@@ -34,12 +34,21 @@ export const createUser = async (req, res, next) => {
       });
     }
 
+    const resolvedCanPublish =
+      role === 'admin'
+        ? true
+        : role === 'section_editor' || role === 'contributor'
+        ? false
+        : canPublish !== undefined
+        ? Boolean(canPublish)
+        : true;
+
     const newUser = await User.create({
       name: name.trim(),
       email: cleanEmail,
       password,
       role,
-      canPublish: canPublish !== undefined ? canPublish : role === 'admin' || role === 'editor',
+      canPublish: resolvedCanPublish,
     });
 
     await AuditLog.create({
