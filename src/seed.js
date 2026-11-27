@@ -52,7 +52,7 @@ const seedData = async () => {
       email: 'section.editor@nmepublication.com',
       password: DEMO_PW,
       role: 'section_editor',
-      canPublish: false,
+      canPublish: true,
       status: 'active',
       avatar: 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=150',
     });

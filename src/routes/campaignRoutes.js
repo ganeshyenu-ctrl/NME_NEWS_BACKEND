@@ -17,7 +17,7 @@ import { requireRole } from '../middleware/rbac.js';
 const router = express.Router();
 
 router.use(authenticate);
-router.use(requireRole(['admin', 'editor']));
+router.use(requireRole(['admin', 'editor', 'section_editor']));
 
 router.get('/', getCampaigns);
 router.get('/:id', getCampaignById);

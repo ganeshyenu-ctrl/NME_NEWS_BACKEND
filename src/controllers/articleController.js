@@ -6,9 +6,6 @@ import { AuditLog } from '../models/AuditLog.js';
 import { Analytics } from '../models/Analytics.js';
 import { getIO, getActiveVisitorCount } from '../config/socket.js';
 
-const isSectionEditor = (user) =>
-  user?.role === 'section_editor' || (user?.role === 'editor' && user?.canPublish === false);
-
 const emitArticleSocketEvents = ({ article, categoryName, type, userName }) => {
   try {
     const io = getIO();
@@ -410,13 +407,6 @@ export const getAdminArticleById = async (req, res, next) => {
 // CRM: Create Article
 export const createArticle = async (req, res, next) => {
   try {
-    if (isSectionEditor(req.user)) {
-      return res.status(403).json({
-        success: false,
-        message: 'Section Editors have read-only view and analysis access.',
-      });
-    }
-
     const {
       title,
       slug: customSlug,
@@ -523,13 +513,6 @@ export const createArticle = async (req, res, next) => {
 // CRM: Update Article
 export const updateArticle = async (req, res, next) => {
   try {
-    if (isSectionEditor(req.user)) {
-      return res.status(403).json({
-        success: false,
-        message: 'Section Editors have read-only view and analysis access.',
-      });
-    }
-
     const { id } = req.params;
     const article = await Article.findById(id);
 
@@ -648,6 +631,7 @@ export const approveArticle = async (req, res, next) => {
     }
 
     article.status = 'published';
+    article.scheduledAt = null;
     if (!article.publishedAt) {
       article.publishedAt = new Date();
     }

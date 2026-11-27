@@ -11,8 +11,8 @@ import { requireRole } from '../middleware/rbac.js';
 const router = express.Router();
 
 router.get('/', getTags);
-router.post('/', authenticate, requireRole(['admin', 'editor']), createTag);
-router.put('/:id', authenticate, requireRole(['admin', 'editor']), updateTag);
-router.delete('/:id', authenticate, requireRole(['admin', 'editor']), deleteTag);
+router.post('/', authenticate, requireRole(['admin', 'editor', 'section_editor']), createTag);
+router.put('/:id', authenticate, requireRole(['admin', 'editor', 'section_editor']), updateTag);
+router.delete('/:id', authenticate, requireRole(['admin', 'editor', 'section_editor']), deleteTag);
 
 export default router;

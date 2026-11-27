@@ -12,6 +12,6 @@ const router = express.Router();
 
 router.get('/', authenticate, getMediaList);
 router.post('/upload', authenticate, upload.single('file'), uploadMediaFile);
-router.delete('/:id', authenticate, requireRole(['admin', 'editor']), deleteMedia);
+router.delete('/:id', authenticate, requireRole(['admin', 'editor', 'section_editor']), deleteMedia);
 
 export default router;

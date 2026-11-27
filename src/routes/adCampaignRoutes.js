@@ -20,10 +20,10 @@ router.post('/public/:id/impression', recordImpression);
 router.post('/public/:id/click', recordClick);
 
 // Admin Management endpoints (protected)
-router.get('/admin', authenticate, requireRole(['admin', 'editor']), getAdminAds);
-router.post('/admin', authenticate, requireRole(['admin', 'editor']), createAdminAd);
-router.put('/admin/:id', authenticate, requireRole(['admin', 'editor']), updateAdminAd);
-router.patch('/admin/:id/status', authenticate, requireRole(['admin', 'editor']), toggleAdminAdStatus);
-router.delete('/admin/:id', authenticate, requireRole(['admin', 'editor']), deleteAdminAd);
+router.get('/admin', authenticate, requireRole(['admin', 'editor', 'section_editor']), getAdminAds);
+router.post('/admin', authenticate, requireRole(['admin', 'editor', 'section_editor']), createAdminAd);
+router.put('/admin/:id', authenticate, requireRole(['admin', 'editor', 'section_editor']), updateAdminAd);
+router.patch('/admin/:id/status', authenticate, requireRole(['admin', 'editor', 'section_editor']), toggleAdminAdStatus);
+router.delete('/admin/:id', authenticate, requireRole(['admin', 'editor', 'section_editor']), deleteAdminAd);
 
 export default router;

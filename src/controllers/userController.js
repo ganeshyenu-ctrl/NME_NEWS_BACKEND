@@ -35,9 +35,7 @@ export const createUser = async (req, res, next) => {
     }
 
     const resolvedCanPublish =
-      role === 'admin'
-        ? true
-        : role === 'section_editor' || role === 'contributor'
+      role === 'contributor'
         ? false
         : canPublish !== undefined
         ? Boolean(canPublish)

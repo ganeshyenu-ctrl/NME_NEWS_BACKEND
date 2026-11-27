@@ -62,14 +62,12 @@ const userSchema = new mongoose.Schema(
   }
 );
 
-// Pre-save hook: enforce canPublish by role without overwriting explicit false on editors
+// Pre-save hook: enforce canPublish by role
 userSchema.pre('save', async function (next) {
-  if (this.role === 'admin') {
+  if (this.role === 'admin' || this.role === 'editor' || this.role === 'section_editor') {
     this.canPublish = true;
-  } else if (this.role === 'section_editor' || this.role === 'contributor') {
+  } else if (this.role === 'contributor') {
     this.canPublish = false;
-  } else if (this.role === 'editor' && this.isNew && this.canPublish === undefined) {
-    this.canPublish = true;
   }
 
   // Only hash password if modified
