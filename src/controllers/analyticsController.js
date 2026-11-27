@@ -85,11 +85,30 @@ export const getAnalyticsOverview = async (req, res, next) => {
       else statusCounts.DRAFT++;
     }
 
-    // Daily visitor trend (last 14 days)
-    const dailyTraffic = await Analytics.find()
+    // Daily visitor trend (last 30 days) & all-time peak day analytics
+    const allAnalytics = await Analytics.find()
       .sort({ date: -1 })
-      .limit(14)
+      .select('date pageViews uniqueVisitors')
       .lean();
+
+    const dailyTraffic = allAnalytics.slice(0, 30).reverse();
+
+    const peakReadsDay =
+      allAnalytics.length > 0
+        ? allAnalytics.reduce((best, cur) =>
+            (cur.pageViews || 0) > (best.pageViews || 0) ? cur : best
+          )
+        : null;
+
+    const peakActiveUsersDay =
+      allAnalytics.length > 0
+        ? allAnalytics.reduce((best, cur) => {
+            const curUsers = cur.uniqueVisitors || 0;
+            const bestUsers = best.uniqueVisitors || 0;
+            if (curUsers !== bestUsers) return curUsers > bestUsers ? cur : best;
+            return (cur.pageViews || 0) > (best.pageViews || 0) ? cur : best;
+          })
+        : null;
 
     res.status(200).json({
       success: true,
@@ -102,7 +121,9 @@ export const getAnalyticsOverview = async (req, res, next) => {
         viewsByCategory,
         articlesByAuthor,
         statusCounts,
-        dailyTraffic: dailyTraffic.reverse(),
+        dailyTraffic,
+        peakReadsDay,
+        peakActiveUsersDay,
       },
     });
   } catch (error) {

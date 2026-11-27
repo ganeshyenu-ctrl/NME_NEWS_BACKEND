@@ -108,7 +108,12 @@ export const getArticleBySlug = async (req, res, next) => {
     // Record real-time analytics & broadcast updated live readership counts
     try {
       const todayStr = new Date().toISOString().split('T')[0];
-      const clientIp = req.ip || req.connection?.remoteAddress || '127.0.0.1';
+      const forwarded = req.headers['x-forwarded-for'];
+      const clientIp =
+        (typeof forwarded === 'string' && forwarded.split(',')[0]?.trim()) ||
+        req.ip ||
+        req.connection?.remoteAddress ||
+        '127.0.0.1';
       await Analytics.findOneAndUpdate(
         { date: todayStr },
         {
